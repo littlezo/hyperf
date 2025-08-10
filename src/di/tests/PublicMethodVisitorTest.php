@@ -82,7 +82,7 @@ use bar\ConfigInterface;
 class foo {
     public function __construct() {}
     public function __get($name) {}
-    
+
 	abstract public function hope(bool $a): int;
 
 	public function it(ConfigInterface $a): void{

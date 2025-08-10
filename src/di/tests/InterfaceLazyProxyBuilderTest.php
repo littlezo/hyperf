@@ -38,7 +38,7 @@ namespace foo;
 use bar\ConfigInterface;
 interface foo {
 	abstract public function hope(bool $a): int;
-	
+
 	public function it(ConfigInterface $a): void;
 
 	public function works(bool $a, float $b = 1): int;

@@ -38,7 +38,7 @@ namespace foo;
 use bar\ConfigInterface;
 class foo {
 	abstract public function hope(bool $a): int;
-	
+
 	public function it(ConfigInterface $a): void{
 		sleep(1);
 	}

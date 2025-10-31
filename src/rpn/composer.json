@@ -27,7 +27,8 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "3.1-dev"
+            "dev-master": "3.1-dev",
+            "dev-main": "3.2-dev"
         },
         "hyperf": {
             "config": "Hyperf\\Rpn\\ConfigProvider"

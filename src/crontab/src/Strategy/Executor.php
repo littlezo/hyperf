@@ -64,7 +64,7 @@ class Executor
     public function execute(Crontab $crontab)
     {
         try {
-            $diff = Carbon::now()->floatDiffInRealSeconds($crontab->getExecuteTime(), false); // @phpstan-ignore-line
+            $diff = max(0, $crontab->getExecuteTime()->getTimestamp() - Carbon::now()->getTimestamp());
             $runnable = null;
 
             switch ($crontab->getType()) {

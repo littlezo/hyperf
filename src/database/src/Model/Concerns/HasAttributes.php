@@ -197,6 +197,12 @@ trait HasAttributes
             return;
         }
 
+        // 08-16 Property hooks 适配：模型声明了 property hook 的属性（计算型 appends）直读 hook，
+        // 免 hasGetMutator/魔法分派链。未声明的走原 getter/cast/关系路径。
+        if (property_exists($this, $key)) {
+            return $this->{$key};
+        }
+
         // If the attribute exists in the attribute array or has a "get" mutator we will
         // get the attribute's value. Otherwise, we will proceed as if the developers
         // are asking for a relationship's value. This covers both types of values.
@@ -254,10 +260,24 @@ trait HasAttributes
 
     /**
      * Determine if a get mutator exists for an attribute.
+     *
+     * 08-17 Property hooks 适配：模型声明了带 get hook 的公共属性（如
+     * `public mixed $payment { get ... }`）视为存在 get mutator。
+     * 本机 PHP 8.5.9 的 ReflectionProperty 无 hasGet()/hasSet()，用 hasHooks() + hasHook(\PropertyHookType::Get)。
      */
     public function hasGetMutator(string $key): bool
     {
-        return method_exists($this, 'get' . StrCache::studly($key) . 'Attribute');
+        if (method_exists($this, 'get' . StrCache::studly($key) . 'Attribute')) {
+            return true;
+        }
+
+        if (property_exists($this, $key)) {
+            $rp = new \ReflectionProperty($this, $key);
+
+            return $rp->hasHooks() && $rp->hasHook(\PropertyHookType::Get);
+        }
+
+        return false;
     }
 
     /**
@@ -278,6 +298,18 @@ trait HasAttributes
         // the model, such as "json_encoding" an listing of data for storage.
         if ($this->hasSetMutator($key)) {
             return $this->setMutatedAttributeValue($key, $value);
+        }
+
+        // 08-16 Property hooks 适配：模型声明了带 set hook 的属性（如 member_id/queue/extra_meta 等），
+        // 直接写 hook（如 extra_meta['member']），免 setXxxAttribute 魔法分派链。
+        // 仅当 hook 声明了 set 才走（get-only hook 属性继续落 $attributes）。
+        if (property_exists($this, $key)) {
+            $rp = new \ReflectionProperty($this, $key);
+            if ($rp->hasHooks() && $rp->hasHook(\PropertyHookType::Set)) {
+                $this->{$key} = $value;
+
+                return $this;
+            }
         }
 
         // If an attribute is listed as a "date", we'll convert it from a DateTime
@@ -317,10 +349,23 @@ trait HasAttributes
 
     /**
      * Determine if a set mutator exists for an attribute.
+     *
+     * 08-17 Property hooks 适配：模型声明了带 set hook 的公共属性（如
+     * `public mixed $extra_meta { get ... set ... }`）视为存在 set mutator。
      */
     public function hasSetMutator(string $key): bool
     {
-        return method_exists($this, 'set' . StrCache::studly($key) . 'Attribute');
+        if (method_exists($this, 'set' . StrCache::studly($key) . 'Attribute')) {
+            return true;
+        }
+
+        if (property_exists($this, $key)) {
+            $rp = new \ReflectionProperty($this, $key);
+
+            return $rp->hasHooks() && $rp->hasHook(\PropertyHookType::Set);
+        }
+
+        return false;
     }
 
     /**
@@ -890,9 +935,17 @@ trait HasAttributes
 
     /**
      * Get the value of an attribute using its mutator.
+     *
+     * 08-16 Property hooks 适配：模型声明了 PHP 8.4 property hook 的属性（如
+     * `public float $consume_money { get => ... }`）直读 hook（免魔法分派）；未声明的
+     * 走原 getXxxAttribute 方法（兼容既有访问器）。
      */
     protected function mutateAttribute(string $key, mixed $value)
     {
+        if (property_exists($this, $key)) {
+            return $this->{$key};
+        }
+
         return $this->{'get' . StrCache::studly($key) . 'Attribute'}($value);
     }
 
@@ -966,6 +1019,15 @@ trait HasAttributes
      */
     protected function getClassCastableAttributeValue(string $key, mixed $value): mixed
     {
+        // 08-17 Property hooks 适配：class-cast 列（如 extra_meta 的 AsArrayObject）若声明了
+        // get hook，直读 hook（hook 内自行处理原值解码），否则走原 caster 逻辑。
+        if (property_exists($this, $key)) {
+            $rp = new \ReflectionProperty($this, $key);
+            if ($rp->hasHooks() && $rp->hasHook(\PropertyHookType::Get)) {
+                return $this->{$key};
+            }
+        }
+
         if (isset($this->classCastCache[$key])) {
             return $this->classCastCache[$key];
         }
@@ -1037,9 +1099,21 @@ trait HasAttributes
 
     /**
      * Set the value of an attribute using its mutator.
+     *
+     * 08-17 Property hooks 适配：hasSetMutator 已能识别带 set hook 的属性，此处分派到 hook
+     * 直写（$this->{$key} = $value 触发 set hook）；未声明 hook 的走原 setXxxAttribute 方法。
      */
     protected function setMutatedAttributeValue(string $key, mixed $value)
     {
+        if (property_exists($this, $key)) {
+            $rp = new \ReflectionProperty($this, $key);
+            if ($rp->hasHooks() && $rp->hasHook(\PropertyHookType::Set)) {
+                $this->{$key} = $value;
+
+                return $this;
+            }
+        }
+
         return $this->{'set' . StrCache::studly($key) . 'Attribute'}($value);
     }
 
@@ -1452,6 +1526,10 @@ trait HasAttributes
     /**
      * Get all of the attribute mutator methods.
      *
+     * 08-17 Property hooks 适配：除 get*Attribute 方法外，追加声明了 get hook 的公共属性
+     * （如 `public mixed $payment { get ... }`），使序列化（addMutatedAttributesToArray →
+     * mutateAttributeForArray → mutateAttribute）能命中 hook——真实列访问器转 hook 后依赖此路径。
+     *
      * @param mixed $class
      * @return array
      */
@@ -1459,6 +1537,19 @@ trait HasAttributes
     {
         preg_match_all('/(?<=^|;)get([^;]+?)Attribute(;|$)/', implode(';', get_class_methods($class)), $matches);
 
-        return $matches[1];
+        // 追加 hook 属性名（cacheMutatedAttributes 会对结果做 snake/lcfirst——hook 属性名已是 snake_case）
+        $hookProps = [];
+        try {
+            $reflection = new \ReflectionClass($class);
+            foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+                if ($property->hasHooks() && $property->hasHook(\PropertyHookType::Get)) {
+                    $hookProps[] = $property->getName();
+                }
+            }
+        } catch (\Throwable) {
+            // 反射失败不影响原方法路径
+        }
+
+        return array_merge($matches[1], $hookProps);
     }
 }

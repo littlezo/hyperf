@@ -46,7 +46,10 @@ class ConnectionResolver implements ConnectionResolverInterface
 
         $connection = null;
         $id = $this->getContextKey($name);
-        if (Context::has($id)) {
+        // 修复：Coroutine::fork 会复制父协程 Context（含 DB 连接对象），fork 子协程与父/其他子协程共享同一连接
+        // → Swoole 协程连接绑定冲突（Socket has already been bound to another coroutine → Fatal worker 崩）。
+        // 存连接时记录协程 ID，取时校验——跨协程（fork 复制）的连接视为无效，重新从池取独立连接。
+        if (Context::has($id) && Context::get($id . '.cid') === Coroutine::id()) {
             $connection = Context::get($id);
         }
 
@@ -58,10 +61,13 @@ class ConnectionResolver implements ConnectionResolverInterface
                 // but if other exceptions are thrown, the connection will not return to the connection pool properly.
                 $connection = $connection->getConnection();
                 Context::set($id, $connection);
+                // 记录连接归属协程（非协程环境 id=-1，单线程顺序复用安全）
+                Context::set($id . '.cid', Coroutine::id());
             } finally {
                 if (Coroutine::inCoroutine()) {
                     defer(function () use ($connection, $id) {
                         Context::set($id, null);
+                        Context::set($id . '.cid', null);
                         $connection->release();
                     });
                 }

@@ -13,6 +13,7 @@ declare(strict_types=1);
 namespace Hyperf\Redis;
 
 use Hyperf\Context\Context;
+use Hyperf\Coroutine\Coroutine;
 use Hyperf\Redis\Exception\InvalidRedisConnectionException;
 use Hyperf\Redis\Pool\PoolFactory;
 use Throwable;
@@ -36,7 +37,9 @@ class Redis
     public function __call(string $name, array $arguments): mixed
     {
         // Get a connection from coroutine context or connection pool.
-        $hasContextConnection = Context::has($this->getContextKey());
+        // 修复：Coroutine::fork 复制父协程 Context（含 Redis 连接）→ 子协程共享同一连接 → Swoole\Error。
+        // Context 连接按协程隔离（记录协程 ID，取时校验——跨协程连接视为无效）。
+        $hasContextConnection = Context::has($this->getContextKey()) && Context::get($this->getContextKey() . '.cid') === Coroutine::id();
         $connection = $this->getConnection($hasContextConnection);
         // Record the start time of the command.
         $start = (float) microtime(true);
@@ -71,6 +74,7 @@ class Redis
                     }
                     // Should storage the connection to coroutine context, then use defer() to release the connection.
                     Context::set($this->getContextKey(), $connection);
+                    Context::set($this->getContextKey() . '.cid', Coroutine::id());
                     if (! $this->isInEagerReleaseMode()) {
                         defer(function () {
                             $this->releaseContextConnection();
@@ -96,6 +100,7 @@ class Redis
 
         if ($connection) {
             Context::set($contextKey, null);
+            Context::set($contextKey . '.cid', null);
             $connection->release();
         }
     }
@@ -120,7 +125,8 @@ class Redis
     private function getConnection($hasContextConnection): RedisConnection
     {
         $connection = null;
-        if ($hasContextConnection) {
+        // 协程归属校验（与 __call 的 hasContextConnection 一致）：fork 复制的父协程连接视为无效，重新从池取独立连接
+        if ($hasContextConnection && Context::get($this->getContextKey() . '.cid') === Coroutine::id()) {
             $connection = Context::get($this->getContextKey());
         }
         if (! $connection instanceof RedisConnection) {
